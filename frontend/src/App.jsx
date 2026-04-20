@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 
 const SAMPLE_JSON = JSON.stringify(
@@ -27,6 +27,10 @@ The dashboard should:
 
 const JSON_API_URL = 'http://localhost:4000/generate-tests';
 const TEXT_API_URL = 'http://localhost:4000/generate-from-text';
+const FILE_API_URL = 'http://localhost:4000/generate-from-file';
+const DOWNLOAD_URL = 'http://localhost:4000/download';
+
+const ACCEPTED_FILE_TYPES = '.txt,.pdf,.docx';
 
 const CATEGORY_LABELS = {
   all: 'All',
@@ -47,10 +51,33 @@ function catClass(category) {
   return CAT_CSS_MAP[category] || 'edge';
 }
 
+function getDisplayPriority(priority, category) {
+  const p = (priority || '').toLowerCase();
+  if (category === 'Happy Path') return 'Show Stopper';
+  if (category === 'Negative') return 'Highest';
+  if (category === 'Conditional' || p === 'high') return 'High';
+  if (category === 'Edge Case' || p === 'medium') return 'Medium';
+  return 'Low';
+}
+
+const PRIORITY_OPTIONS = ['ALL', 'Show Stopper', 'Highest', 'High', 'Medium', 'Low'];
+
+const PRIORITY_CSS_MAP = {
+  'Show Stopper': 'show-stopper',
+  'Highest': 'highest',
+  'High': 'high',
+  'Medium': 'medium',
+  'Low': 'low',
+};
+
 export default function App() {
   const [inputMode, setInputMode] = useState('json');
   const [jsonInput, setJsonInput] = useState(SAMPLE_JSON);
   const [storyInput, setStoryInput] = useState('');
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [extractedPreview, setExtractedPreview] = useState('');
+  const [fileName, setFileName] = useState('');
+  const fileInputRef = useRef(null);
   const [testCases, setTestCases] = useState([]);
   const [junitCode, setJunitCode] = useState('');
   const [summary, setSummary] = useState(null);
@@ -65,6 +92,7 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [aiWarning, setAiWarning] = useState('');
   const [expandedRows, setExpandedRows] = useState(new Set());
+  const [priorityFilter, setPriorityFilter] = useState('ALL');
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 4000); return () => clearTimeout(t); }
@@ -76,14 +104,21 @@ export default function App() {
 
   function resetResults() {
     setError(''); setTestCases([]); setJunitCode(''); setSummary(null);
-    setCategoryFilter('all'); setToast(null); setAiWarning('');
+    setCategoryFilter('all'); setPriorityFilter('ALL'); setToast(null); setAiWarning('');
     setDetectedFeatures([]); setParsingSource(''); setExpandedRows(new Set());
+    setExtractedPreview(''); setFileName('');
+  }
+
+  function resetFileInput() {
+    setUploadedFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   }
 
   async function handleGenerate() {
     resetResults();
     if (inputMode === 'json') await generateFromJSON();
-    else await generateFromStory();
+    else if (inputMode === 'story') await generateFromStory();
+    else if (inputMode === 'file') await generateFromFile();
   }
 
   async function generateFromJSON() {
@@ -116,24 +151,78 @@ export default function App() {
     finally { setLoading(false); }
   }
 
+  async function generateFromFile() {
+    if (!uploadedFile) { setError('Please select a file to upload (.txt, .pdf, or .docx).'); return; }
+    setLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', uploadedFile);
+      const res = await fetch(FILE_API_URL, { method: 'POST', body: formData });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || 'Server error.'); return; }
+      applyResults(data);
+      if (data.detectedFeatures) setDetectedFeatures(data.detectedFeatures);
+      if (data.parsingSource) setParsingSource(data.parsingSource);
+      if (data.extractedTextPreview) setExtractedPreview(data.extractedTextPreview);
+      if (data.fileName) setFileName(data.fileName);
+    } catch { setError('Could not reach the server. Is the backend running on port 4000?'); }
+    finally { setLoading(false); }
+  }
+
   function applyResults(data) {
     setTestCases(data.testCases); setJunitCode(data.junitCode); setSummary(data.summary);
     if (data.aiWarning) setAiWarning(data.aiWarning);
     setToast(`${data.summary.total} test cases generated successfully!`);
   }
 
-  function handleDownload() {
+  const [downloadOpen, setDownloadOpen] = useState(false);
+
+  function handleDownloadJUnit() {
     const blob = new Blob([junitCode], { type: 'text/x-java-source' });
     const url = URL.createObjectURL(blob); const a = document.createElement('a');
     a.href = url; a.download = 'GeneratedControllerTest.java'; a.click(); URL.revokeObjectURL(url);
+    setDownloadOpen(false);
+  }
+
+  async function handleDownloadExcel() {
+    setDownloadOpen(false);
+    try {
+      const downloadCases = filtered.map((tc) => ({
+        ...tc,
+        priority: getDisplayPriority(tc.priority, tc.category),
+      }));
+      const res = await fetch(DOWNLOAD_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ testCases: downloadCases }),
+      });
+      if (!res.ok) { setError('Failed to generate Excel file.'); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'testcases.xlsx'; a.click(); URL.revokeObjectURL(url);
+    } catch { setError('Could not download Excel. Is the backend running?'); }
   }
 
   function handleCopy() { navigator.clipboard.writeText(junitCode).then(() => setCopied(true)); }
 
   function handleLoadSample() {
     if (inputMode === 'json') setJsonInput(SAMPLE_JSON);
-    else setStoryInput(SAMPLE_STORY);
+    else if (inputMode === 'story') setStoryInput(SAMPLE_STORY);
     setError('');
+  }
+
+  function handleFileChange(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['txt', 'pdf', 'docx'].includes(ext)) {
+      setError('Unsupported file type. Please upload a .txt, .pdf, or .docx file.');
+      resetFileInput();
+      return;
+    }
+    setError('');
+    setUploadedFile(file);
   }
 
   function toggleRow(id) {
@@ -148,7 +237,11 @@ export default function App() {
   function collapseAll() { setExpandedRows(new Set()); }
 
   const allCategories = summary ? ['all', ...Object.keys(summary.byCategory)] : ['all'];
-  const filtered = categoryFilter === 'all' ? testCases : testCases.filter((tc) => tc.category === categoryFilter);
+  const filtered = testCases.filter((tc) => {
+    if (categoryFilter !== 'all' && tc.category !== categoryFilter) return false;
+    if (priorityFilter !== 'ALL' && getDisplayPriority(tc.priority, tc.category) !== priorityFilter) return false;
+    return true;
+  });
 
   return (
     <div className="app">
@@ -160,7 +253,7 @@ export default function App() {
             <span className="logo-icon">⚡</span>
             <h1>QA Test Generator</h1>
           </div>
-          <p className="subtitle">Generate QA-engineer-level test cases from API specs or user stories</p>
+          <p className="subtitle">Generate QA-engineer-level test cases from API specs, user stories, or uploaded documents</p>
         </div>
       </header>
 
@@ -169,18 +262,46 @@ export default function App() {
         <section className="card input-section">
           <div className="card-header">
             <h2>Input</h2>
-            <button className="btn btn-ghost" onClick={handleLoadSample}>Load Sample</button>
+            {inputMode !== 'file' && (
+              <button className="btn btn-ghost" onClick={handleLoadSample}>Load Sample</button>
+            )}
           </div>
 
           <div className="input-mode-toggle">
-            <button className={`mode-btn ${inputMode === 'json' ? 'active' : ''}`} onClick={() => { setInputMode('json'); resetResults(); }}>JSON Input</button>
-            <button className={`mode-btn ${inputMode === 'story' ? 'active' : ''}`} onClick={() => { setInputMode('story'); resetResults(); }}>User Story Input</button>
+            <button className={`mode-btn ${inputMode === 'json' ? 'active' : ''}`} onClick={() => { setInputMode('json'); resetResults(); resetFileInput(); }}>JSON Input</button>
+            <button className={`mode-btn ${inputMode === 'story' ? 'active' : ''}`} onClick={() => { setInputMode('story'); resetResults(); resetFileInput(); }}>User Story</button>
+            <button className={`mode-btn ${inputMode === 'file' ? 'active' : ''}`} onClick={() => { setInputMode('file'); resetResults(); }}>Upload File</button>
           </div>
 
-          {inputMode === 'json' ? (
+          {inputMode === 'json' && (
             <textarea className="json-input" placeholder={`{\n  "endpoint": "/users",\n  "method": "POST",\n  "fields": { "email": "string", "age": "number" }\n}`} value={jsonInput} onChange={(e) => setJsonInput(e.target.value)} spellCheck={false} />
-          ) : (
+          )}
+
+          {inputMode === 'story' && (
             <textarea className="json-input story-input" placeholder="Paste user story or requirements here..." value={storyInput} onChange={(e) => setStoryInput(e.target.value)} spellCheck={true} />
+          )}
+
+          {inputMode === 'file' && (
+            <div className="file-upload-area">
+              <label className="file-drop-zone" htmlFor="file-input">
+                <div className="file-drop-content">
+                  <span className="file-icon">📄</span>
+                  {uploadedFile ? (
+                    <div className="file-selected">
+                      <span className="file-name">{uploadedFile.name}</span>
+                      <span className="file-size">({(uploadedFile.size / 1024).toFixed(1)} KB)</span>
+                      <button className="btn btn-ghost btn-sm file-remove" onClick={(e) => { e.preventDefault(); resetFileInput(); }}>Remove</button>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="file-label">Click to select or drag a file here</span>
+                      <span className="file-hint">Accepted formats: .txt, .pdf, .docx (max 10 MB)</span>
+                    </>
+                  )}
+                </div>
+                <input id="file-input" ref={fileInputRef} type="file" accept={ACCEPTED_FILE_TYPES} onChange={handleFileChange} className="file-hidden-input" />
+              </label>
+            </div>
           )}
 
           {inputMode === 'json' && (
@@ -202,6 +323,16 @@ export default function App() {
             {loading ? (<><span className="spinner" />Generating…</>) : 'Generate Test Cases'}
           </button>
         </section>
+
+        {/* Extracted Text Preview (file upload) */}
+        {extractedPreview && (
+          <section className="card extracted-preview-card">
+            <div className="card-header">
+              <h2>Extracted Text {fileName && <span className="file-tag">{fileName}</span>}</h2>
+            </div>
+            <pre className="extracted-text">{extractedPreview}</pre>
+          </section>
+        )}
 
         {/* Detected Features */}
         {detectedFeatures.length > 0 && (
@@ -245,6 +376,12 @@ export default function App() {
                     <button className="clear-filter" onClick={() => setCategoryFilter('all')}>×</button>
                   </span>
                 )}
+                {priorityFilter !== 'ALL' && (
+                  <span className="filter-tag filter-tag-priority">
+                    {priorityFilter}
+                    <button className="clear-filter" onClick={() => setPriorityFilter('ALL')}>×</button>
+                  </span>
+                )}
               </h2>
               <span className="badge">{filtered.length} test cases</span>
             </div>
@@ -262,6 +399,17 @@ export default function App() {
                       {CATEGORY_LABELS[cat] || cat}
                     </button>
                   ))}
+                  <div className="priority-filter-group">
+                    <select
+                      className="priority-select"
+                      value={priorityFilter}
+                      onChange={(e) => setPriorityFilter(e.target.value)}
+                    >
+                      {PRIORITY_OPTIONS.map((p) => (
+                        <option key={p} value={p}>{p === 'ALL' ? 'Priority: All' : p}</option>
+                      ))}
+                    </select>
+                  </div>
                   <span className="expand-controls">
                     <button className="btn btn-ghost btn-sm" onClick={expandAll}>Expand All</button>
                     <button className="btn btn-ghost btn-sm" onClick={collapseAll}>Collapse All</button>
@@ -270,11 +418,17 @@ export default function App() {
                 <div className="table-wrapper">
                   <table className="test-table">
                     <thead>
-                      <tr>
-                        <th style={{ width: '3rem' }}>ID</th>
-                        <th>Title</th>
-                        <th style={{ width: '7rem' }}>Category</th>
-                        <th style={{ width: '5rem' }}>Priority</th>
+                      <tr className="header-row-1">
+                        <th rowSpan={2} style={{ width: '3.5rem' }}>TC ID</th>
+                        <th rowSpan={2}>Title</th>
+                        <th rowSpan={2} style={{ width: '6rem' }}>Priority</th>
+                        <th rowSpan={2} style={{ width: '7rem' }}>Type</th>
+                        <th rowSpan={2}>Expected Result</th>
+                        <th colSpan={2} className="exec-status-header">Execution Status</th>
+                      </tr>
+                      <tr className="header-row-2">
+                        <th style={{ width: '5rem' }}>DEV</th>
+                        <th style={{ width: '5rem' }}>QA</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -287,19 +441,26 @@ export default function App() {
                               {tc.title}
                             </td>
                             <td>
+                              {(() => { const dp = getDisplayPriority(tc.priority, tc.category); return (
+                                <span className={`priority-badge priority-${PRIORITY_CSS_MAP[dp] || 'medium'}`}>
+                                  {dp}
+                                </span>
+                              ); })()}
+                            </td>
+                            <td>
                               <span className={`cat-badge cat-${catClass(tc.category)}`}>
                                 {tc.category}
                               </span>
                             </td>
-                            <td>
-                              <span className={`priority-badge priority-${tc.priority}`}>
-                                {tc.priority}
-                              </span>
+                            <td className="expected-cell">
+                              {typeof tc.expected === 'string' ? tc.expected : (tc.expected?.message || '—')}
                             </td>
+                            <td className="exec-cell"></td>
+                            <td className="exec-cell"></td>
                           </tr>
                           {expandedRows.has(tc.id) && (
                             <tr className="detail-row">
-                              <td colSpan={4}>
+                              <td colSpan={7}>
                                 <div className="detail-grid">
                                   <div className="detail-section">
                                     <h4>Preconditions</h4>
@@ -337,7 +498,17 @@ export default function App() {
             )}
 
             <div className="action-row">
-              <button className="btn btn-secondary" onClick={handleDownload}>⬇ Download JUnit File</button>
+              <div className="download-dropdown">
+                <button className="btn btn-secondary" onClick={() => setDownloadOpen(!downloadOpen)}>
+                  Download {downloadOpen ? '▲' : '▼'}
+                </button>
+                {downloadOpen && (
+                  <div className="download-menu">
+                    <button className="download-option" onClick={handleDownloadExcel}>Excel (.xlsx)</button>
+                    <button className="download-option" onClick={handleDownloadJUnit}>JUnit (.java)</button>
+                  </div>
+                )}
+              </div>
               <button className="btn btn-ghost" onClick={handleCopy}>{copied ? '✓ Copied!' : '📋 Copy Code'}</button>
             </div>
           </section>

@@ -1,9 +1,12 @@
 const express = require('express');
 const cors = require('cors');
+const multer = require('multer');
 const { runRuleEngine, CATEGORY_SORT_ORDER } = require('./ruleEngine');
 const { generateJUnitCodeV2 } = require('./junitGeneratorV2');
 const { enhanceWithAI } = require('./aiService');
 const { convertUserStoryToModel } = require('./textParser');
+const { extractTextFromFile, cleanupFile } = require('./fileExtractor');
+const ExcelJS = require('exceljs');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -11,6 +14,8 @@ const MIN_TEST_CASES = 50;
 
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
+
+const upload = multer({ dest: 'uploads/', limits: { fileSize: 10 * 1024 * 1024 } });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -140,20 +145,24 @@ app.post('/generate-from-text', async (req, res) => {
       return res.status(500).json({ error: 'Failed to parse user story: ' + err.message });
     }
 
-    // 3. Assign IDs to test cases
+    // 3. Log detected features
+    console.log(`[/generate-from-text] Detected ${model.detectedFeatures.length} features: ${model.detectedFeatures.join(', ')}`);
+    console.log(`[/generate-from-text] Source: ${model.source} | Raw test cases: ${model.testCases.length}`);
+
+    // 4. Assign IDs to test cases
     let testCases = model.testCases.map((tc, i) => ({
       ...tc,
       id: i + 1,
       statusCode: tc.statusCode || 200,
     }));
 
-    // 4. Ensure minimum 50 test cases by padding with QA-quality patterns
+    // 5. Ensure minimum 50 test cases by padding with QA-quality patterns
     if (testCases.length < MIN_TEST_CASES) {
       testCases = padTestCases(testCases, model.detectedFeatures);
     }
     sortAndRenumber(testCases);
 
-    // 5. Generate JUnit-style code
+    // 6. Generate JUnit-style code
     let junitCode;
     try {
       const pseudoInput = { endpoint: '/user-story', method: 'GET', fields: {} };
@@ -163,8 +172,9 @@ app.post('/generate-from-text', async (req, res) => {
       junitCode = '// JUnit code generation failed. See test cases table for results.';
     }
 
-    // 6. Respond
+    // 7. Respond
     const summary = buildSummary(testCases);
+    console.log(`[/generate-from-text] Final: ${summary.total} test cases | Categories: ${JSON.stringify(summary.byCategory)}`);
 
     return res.json({
       testCases,
@@ -176,6 +186,90 @@ app.post('/generate-from-text', async (req, res) => {
   } catch (err) {
     console.error('Unexpected error in /generate-from-text:', err);
     return res.status(500).json({ error: 'Internal server error. Please try again.' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /generate-from-file  (file upload: txt, pdf, docx)
+// ---------------------------------------------------------------------------
+
+app.post('/generate-from-file', upload.single('file'), async (req, res) => {
+  let filePath = null;
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded. Please attach a .txt, .pdf, or .docx file.' });
+    }
+
+    filePath = req.file.path;
+    const originalName = req.file.originalname || '';
+
+    // 1. Extract text from file
+    let extractedText;
+    try {
+      extractedText = await extractTextFromFile(filePath, originalName);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    const trimmed = extractedText.trim().slice(0, 10000);
+    if (!trimmed) {
+      return res.status(400).json({ error: 'Uploaded file contains no extractable text.' });
+    }
+
+    // 2. Convert to structured model (reuse existing text parser)
+    let model;
+    try {
+      model = await convertUserStoryToModel(trimmed);
+    } catch (err) {
+      console.error('Text parsing from file failed:', err);
+      return res.status(500).json({ error: 'Failed to parse file content: ' + err.message });
+    }
+
+    // 3. Log detected features
+    console.log(`[/generate-from-file] Detected ${model.detectedFeatures.length} features: ${model.detectedFeatures.join(', ')}`);
+    console.log(`[/generate-from-file] Source: ${model.source} | Raw test cases: ${model.testCases.length}`);
+
+    // 4. Assign IDs
+    let testCases = model.testCases.map((tc, i) => ({
+      ...tc,
+      id: i + 1,
+      statusCode: tc.statusCode || 200,
+    }));
+
+    // 5. Pad to minimum
+    if (testCases.length < MIN_TEST_CASES) {
+      testCases = padTestCases(testCases, model.detectedFeatures);
+    }
+    sortAndRenumber(testCases);
+
+    // 6. Generate JUnit
+    let junitCode;
+    try {
+      const pseudoInput = { endpoint: '/file-upload', method: 'GET', fields: {} };
+      junitCode = generateJUnitCodeV2(pseudoInput, testCases);
+    } catch (err) {
+      console.error('JUnit generation failed:', err);
+      junitCode = '// JUnit code generation failed. See test cases table for results.';
+    }
+
+    // 7. Respond
+    const summary = buildSummary(testCases);
+    console.log(`[/generate-from-file] Final: ${summary.total} test cases | Categories: ${JSON.stringify(summary.byCategory)}`);
+
+    return res.json({
+      testCases,
+      junitCode,
+      summary,
+      detectedFeatures: model.detectedFeatures,
+      parsingSource: model.source,
+      extractedTextPreview: trimmed.slice(0, 500) + (trimmed.length > 500 ? '…' : ''),
+      fileName: originalName,
+    });
+  } catch (err) {
+    console.error('Unexpected error in /generate-from-file:', err);
+    return res.status(500).json({ error: 'Internal server error. Please try again.' });
+  } finally {
+    if (filePath) cleanupFile(filePath);
   }
 });
 
@@ -251,6 +345,78 @@ function padTestCases(testCases, features) {
   }
   return testCases;
 }
+
+// ---------------------------------------------------------------------------
+// POST /download  (Excel export)
+// ---------------------------------------------------------------------------
+
+app.post('/download', async (req, res) => {
+  try {
+    const { testCases } = req.body || {};
+    if (!Array.isArray(testCases) || testCases.length === 0) {
+      return res.status(400).json({ error: 'testCases array is required.' });
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Test Cases');
+
+    // Set column widths (A–G)
+    sheet.getColumn(1).width = 10;   // TC ID
+    sheet.getColumn(2).width = 40;   // Title
+    sheet.getColumn(3).width = 20;   // Priority
+    sheet.getColumn(4).width = 20;   // Type
+    sheet.getColumn(5).width = 50;   // Expected Result
+    sheet.getColumn(6).width = 15;   // DEV
+    sheet.getColumn(7).width = 15;   // QA
+
+    // Row 1 — top header with merged "Execution Status" over F1:G1
+    const row1 = sheet.getRow(1);
+    row1.values = ['TC ID', 'Title', 'Priority', 'Type', 'Expected Result', 'Execution Status'];
+    sheet.mergeCells('F1:G1');
+
+    // Row 2 — sub-headers for the merged columns
+    const row2 = sheet.getRow(2);
+    row2.values = [null, null, null, null, null, 'DEV', 'QA'];
+
+    // Merge A1:A2, B1:B2, C1:C2, D1:D2, E1:E2 (span 2 rows for non-split headers)
+    ['A', 'B', 'C', 'D', 'E'].forEach((col) => sheet.mergeCells(`${col}1:${col}2`));
+
+    // Style both header rows
+    const headerStyle = { bold: true };
+    const headerAlign = { vertical: 'middle', horizontal: 'center' };
+    const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+    const headerBorder = {
+      top: { style: 'thin' }, bottom: { style: 'thin' },
+      left: { style: 'thin' }, right: { style: 'thin' },
+    };
+
+    [row1, row2].forEach((row) => {
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.font = headerStyle;
+        cell.alignment = headerAlign;
+        cell.fill = headerFill;
+        cell.border = headerBorder;
+      });
+    });
+
+    // Data rows starting at row 3
+    testCases.forEach((tc) => {
+      sheet.addRow([tc.id, tc.title, tc.priority, tc.category, tc.expected, '', '']);
+    });
+
+    // Enable filter dropdowns on sub-header row (row 2, all columns)
+    sheet.autoFilter = { from: 'A2', to: 'G2' };
+
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename=testcases.xlsx');
+    res.send(buffer);
+  } catch (err) {
+    console.error('Excel generation failed:', err);
+    res.status(500).json({ error: 'Failed to generate Excel file.' });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Health check
