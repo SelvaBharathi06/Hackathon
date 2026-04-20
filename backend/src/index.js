@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
+const axios = require('axios');
 const { runRuleEngine, CATEGORY_SORT_ORDER } = require('./ruleEngine');
 const { generateJUnitCodeV2 } = require('./junitGeneratorV2');
 const { enhanceWithAI } = require('./aiService');
@@ -10,10 +11,82 @@ const ExcelJS = require('exceljs');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const MIN_TEST_CASES = 50;
+const MIN_TEST_CASES = 40;
 
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  next();
+});
+
+// ---------------------------------------------------------------------------
+// Quality Enforcement — removes generic/low-value test cases, deduplicates
+// ---------------------------------------------------------------------------
+
+const GENERIC_TITLE_PATTERNS = [
+  /^verify (?:the )?(?:page|api|app|system|it) (?:loads|works|functions|runs|is\s+working)/i,
+  /^check (?:the )?(?:response|result|output|page)$/i,
+  /^test (?:the )?(?:api|endpoint|feature|page|system)$/i,
+  /^verify (?:everything|all|basic) (?:works|functions|is\s+ok)/i,
+  /^ensure (?:the )?(?:api|page|system|app) (?:is )?(?:working|functional|ok|running)/i,
+  /^verify (?:the )?(?:ui|interface|frontend|backend) (?:works|loads|renders)$/i,
+  /^verify (?:basic )?functionality$/i,
+  /^smoke test$/i,
+];
+
+function enforceQuality(testCases, maxCases = 70, minCases = 40) {
+  let filtered = testCases;
+
+  // 1. Remove test cases with generic titles
+  filtered = filtered.filter(tc => {
+    const title = (tc.title || '').trim();
+    if (!title || title.length < 20) return false;
+    return !GENERIC_TITLE_PATTERNS.some(pattern => pattern.test(title));
+  });
+
+  // 2. Remove test cases missing critical fields
+  filtered = filtered.filter(tc => {
+    if (!tc.title || !tc.category || !tc.priority) return false;
+    if (!tc.steps || !Array.isArray(tc.steps) || tc.steps.length === 0) return false;
+    if (!tc.expected) return false;
+    if (!tc.preconditions || !Array.isArray(tc.preconditions) || tc.preconditions.length === 0) return false;
+    return true;
+  });
+
+  // 3. Remove near-duplicate titles (word-overlap > 85%)
+  const seen = new Map();
+  filtered = filtered.filter(tc => {
+    const words = new Set(
+      tc.title.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2)
+    );
+    for (const [, existingWords] of seen.entries()) {
+      const intersection = [...words].filter(w => existingWords.has(w)).length;
+      const union = new Set([...words, ...existingWords]).size;
+      if (union > 0 && intersection / union > 0.85) return false;
+    }
+    seen.set(tc.title, words);
+    return true;
+  });
+
+  // 4. Cap at maxCases — remove lowest priority first if over limit
+  if (filtered.length > maxCases) {
+    const priorityOrder = { HIGH: 0, MEDIUM: 1, LOW: 2, high: 0, medium: 1, low: 2 };
+    filtered.sort((a, b) => (priorityOrder[a.priority] ?? 2) - (priorityOrder[b.priority] ?? 2));
+    filtered = filtered.slice(0, maxCases);
+  }
+
+  // 5. Re-sort by category and renumber
+  filtered.sort((a, b) =>
+    (CATEGORY_SORT_ORDER[a.category] ?? 9) - (CATEGORY_SORT_ORDER[b.category] ?? 9)
+  );
+  filtered.forEach((tc, i) => { tc.id = i + 1; });
+
+  console.log(`[enforceQuality] ${testCases.length} → ${filtered.length} test cases (removed ${testCases.length - filtered.length} low-quality)`);
+  return filtered;
+}
 
 const upload = multer({ dest: 'uploads/', limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -93,11 +166,10 @@ app.post('/generate-tests', async (req, res) => {
     // 4. Sort by category order and renumber
     sortAndRenumber(testCases);
 
-    if (testCases.length < MIN_TEST_CASES) {
-      console.warn(`Only ${testCases.length} cases generated — below minimum ${MIN_TEST_CASES}.`);
-    }
+    // 5. Enforce quality — remove generics, dedup, cap at 70
+    testCases = enforceQuality(testCases);
 
-    // 5. Generate JUnit code
+    // 6. Generate JUnit code
     let junitCode;
     try {
       junitCode = generateJUnitCodeV2(input, testCases);
@@ -156,11 +228,14 @@ app.post('/generate-from-text', async (req, res) => {
       statusCode: tc.statusCode || 200,
     }));
 
-    // 5. Ensure minimum 50 test cases by padding with QA-quality patterns
+    // 5. Ensure minimum test cases by padding with QA-quality patterns
     if (testCases.length < MIN_TEST_CASES) {
       testCases = padTestCases(testCases, model.detectedFeatures);
     }
     sortAndRenumber(testCases);
+
+    // 5b. Enforce quality — remove generics, dedup, cap at 70
+    testCases = enforceQuality(testCases);
 
     // 6. Generate JUnit-style code
     let junitCode;
@@ -242,6 +317,9 @@ app.post('/generate-from-file', upload.single('file'), async (req, res) => {
     }
     sortAndRenumber(testCases);
 
+    // 5b. Enforce quality — remove generics, dedup, cap at 70
+    testCases = enforceQuality(testCases);
+
     // 6. Generate JUnit
     let junitCode;
     try {
@@ -272,52 +350,268 @@ app.post('/generate-from-file', upload.single('file'), async (req, res) => {
     if (filePath) cleanupFile(filePath);
   }
 });
+// POST /generate-from-swagger-url  (Swagger / OpenAPI URL input)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Helper: Validate Swagger/OpenAPI structure
+// ---------------------------------------------------------------------------
+
+function validateSwaggerStructure(data) {
+  if (typeof data !== 'object' || data === null) {
+    throw new Error('Invalid Swagger response (not JSON)');
+  }
+
+  if (!data.paths || typeof data.paths !== 'object' || Object.keys(data.paths).length === 0) {
+    throw new Error('Invalid OpenAPI/Swagger specification: no paths found');
+  }
+
+  if (!data.openapi && !data.swagger) {
+    throw new Error('Invalid OpenAPI/Swagger specification: missing openapi or swagger version field');
+  }
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: Fetch and validate Swagger JSON with fallback logic
+// ---------------------------------------------------------------------------
+
+async function fetchSwaggerJson(url) {
+  console.log(`[Swagger Fetch] Attempting: ${url}`);
+
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'Mozilla/5.0 (compatible; QA-Test-Generator/1.0)',
+      },
+      timeout: 15000,
+    });
+
+    console.log(`[Swagger Fetch] Response status: ${response.status}, type: ${typeof response.data}`);
+
+    // Check if response is HTML (Swagger UI page)
+    if (typeof response.data === 'string') {
+      if (response.data.includes('<!DOCTYPE') || response.data.includes('<html')) {
+        throw new Error('Swagger UI page detected. Please provide the JSON specification URL instead (e.g., /swagger.json or /openapi.json)');
+      }
+      throw new Error('Received HTML/text instead of JSON. Please provide a valid Swagger/OpenAPI JSON URL.');
+    }
+
+    // Validate response is an object
+    if (typeof response.data !== 'object') {
+      throw new Error('Invalid Swagger response (not JSON)');
+    }
+
+    // Validate Swagger structure
+    validateSwaggerStructure(response.data);
+
+    console.log(`[Swagger Fetch] Success: ${url}`);
+    return response.data;
+  } catch (err) {
+    console.log(`[Swagger Fetch] Failed for ${url}: ${err.message}`);
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Endpoint: Generate from Swagger URL with robust handling
+// ---------------------------------------------------------------------------
+
+app.post('/generate-from-swagger-url', async (req, res) => {
+  try {
+    const { url } = req.body || {};
+
+    // 1. Validate URL
+    if (!url || typeof url !== 'string' || !url.trim()) {
+      return res.status(400).json({ error: '"url" is required and must be a non-empty string.' });
+    }
+
+    let parsed;
+    try { parsed = new URL(url.trim()); } catch {
+      return res.status(400).json({ error: 'Invalid URL format. Please provide a valid Swagger/OpenAPI JSON URL.' });
+    }
+
+    console.log('[Swagger URL received]:', parsed.href);
+
+    // Early validation: reject Swagger UI URLs
+    if (parsed.hash && parsed.hash.includes('/')) {
+      return res.status(400).json({
+        error: 'Swagger UI URL detected. Please use the JSON specification URL instead.',
+        details: 'You provided a Swagger UI link (with #/). Please use the direct JSON spec URL like /swagger.json or /openapi.json',
+        suggestion: `${parsed.origin}${parsed.pathname}/swagger.json`,
+      });
+    }
+
+    // 2. Fetch Swagger JSON
+    let swaggerJson;
+    try {
+      swaggerJson = await fetchSwaggerJson(parsed.href);
+    } catch (err) {
+      return res.status(400).json({
+        error: 'Invalid Swagger URL.',
+        details: err.message,
+        suggestion: 'Please use a valid OpenAPI/Swagger JSON specification URL (e.g., /swagger.json or /openapi.json)',
+      });
+    }
+
+    // 3. Extract endpoints from OpenAPI/Swagger spec
+    const paths = swaggerJson.paths;
+    const endpoints = [];
+    for (const [path, methods] of Object.entries(paths)) {
+      for (const [method, details] of Object.entries(methods)) {
+        if (['get', 'post', 'put', 'patch', 'delete'].includes(method.toLowerCase())) {
+          const fields = {};
+
+          // OpenAPI 3.x requestBody
+          const schema = details.requestBody?.content?.['application/json']?.schema;
+          if (schema?.properties) {
+            for (const [name, prop] of Object.entries(schema.properties)) {
+              fields[name] = prop.type || 'string';
+            }
+          }
+
+          // Swagger 2.x / OpenAPI parameters
+          const params = details.parameters || [];
+          for (const p of params) {
+            if (p.in === 'body' && p.schema?.properties) {
+              for (const [name, prop] of Object.entries(p.schema.properties)) {
+                fields[name] = prop.type || 'string';
+              }
+            } else if (p.in === 'query' || p.in === 'path') {
+              fields[p.name] = p.type || p.schema?.type || 'string';
+            }
+          }
+
+          // If no fields found, add a placeholder so rule engine still works
+          if (Object.keys(fields).length === 0) {
+            fields.id = 'string';
+          }
+
+          endpoints.push({
+            endpoint: path,
+            method: method.toUpperCase(),
+            fields,
+            operationId: details.operationId || `${method.toUpperCase()} ${path}`,
+            summary: details.summary || '',
+          });
+        }
+      }
+    }
+
+    if (endpoints.length === 0) {
+      return res.status(400).json({ error: 'No valid endpoints found in the Swagger specification.' });
+    }
+
+    // 6. Generate test cases for each endpoint
+    let allTestCases = [];
+    for (const ep of endpoints) {
+      try {
+        const cases = runRuleEngine(ep);
+        allTestCases = allTestCases.concat(cases);
+      } catch (err) {
+        console.warn(`Rule engine failed for ${ep.method} ${ep.endpoint}:`, err.message);
+      }
+    }
+
+    if (allTestCases.length === 0) {
+      return res.status(500).json({ error: 'Failed to generate test cases from the Swagger endpoints.' });
+    }
+
+    // 7. Sort, renumber, and pad if needed
+    sortAndRenumber(allTestCases);
+    if (allTestCases.length < MIN_TEST_CASES) {
+      const features = endpoints.map((ep) => `${ep.method} ${ep.endpoint}`);
+      allTestCases = padTestCases(allTestCases, features);
+      sortAndRenumber(allTestCases);
+    }
+
+    // 8. Enforce quality
+    allTestCases = enforceQuality(allTestCases);
+
+    // 9. Generate JUnit code
+    let junitCode;
+    try {
+      const pseudoInput = { endpoint: endpoints[0].endpoint, method: endpoints[0].method, fields: endpoints[0].fields };
+      junitCode = generateJUnitCodeV2(pseudoInput, allTestCases);
+    } catch (err) {
+      console.error('JUnit generation failed:', err);
+      junitCode = '// JUnit code generation failed. See test cases table for results.';
+    }
+
+    // 10. Respond
+    const summary = buildSummary(allTestCases);
+    const detectedFeatures = endpoints.map((ep) => `${ep.method} ${ep.endpoint}${ep.summary ? ' — ' + ep.summary : ''}`);
+    console.log(`[/generate-from-swagger-url] Final: ${summary.total} test cases from ${endpoints.length} endpoints`);
+
+    return res.json({
+      testCases: allTestCases,
+      junitCode,
+      summary,
+      detectedFeatures,
+      parsingSource: 'swagger',
+      swaggerInfo: {
+        title: swaggerJson.info?.title || 'Unknown API',
+        version: swaggerJson.info?.version || '',
+        endpointCount: endpoints.length,
+      },
+    });
+  } catch (err) {
+    console.error('Unexpected error in /generate-from-swagger-url:', err);
+    return res.status(500).json({ error: 'Internal server error. Please try again.' });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Padding templates (QA format) for text-based generation
 // ---------------------------------------------------------------------------
 
 const PADDING_TEMPLATES = [
-  { title: 'Verify {f} remains functional on slow network (3G throttle)', category: 'Edge Case', priority: 'MEDIUM',
-    pre: ['User is logged in', 'Network is throttled to 3G speed'],
-    steps: ['Enable 3G throttling in browser DevTools', 'Navigate to the {f} section', 'Perform key interactions', 'Verify all actions complete (with acceptable delay)', 'Verify no timeout errors are shown'],
-    expected: '{f} remains functional under slow network — actions complete and no timeout errors occur.' },
-  { title: 'Verify {f} handles concurrent user actions without race conditions', category: 'Edge Case', priority: 'MEDIUM',
-    pre: ['User is logged in', 'Multiple browser tabs are open'],
-    steps: ['Open the {f} feature in two tabs', 'Perform conflicting actions simultaneously', 'Verify no data corruption or duplicate entries', 'Verify both tabs reflect consistent state after refresh'],
-    expected: 'Concurrent actions are handled safely — no data corruption, duplicates, or inconsistent state.' },
-  { title: 'Verify {f} state persists correctly after full page refresh', category: 'Edge Case', priority: 'MEDIUM',
-    pre: ['User is logged in', 'User has made changes in {f}'],
-    steps: ['Interact with {f} and note the current state', 'Press F5 or Ctrl+R to refresh the page', 'Verify the state is restored correctly', 'Verify no unsaved changes are lost unexpectedly'],
-    expected: 'Page refresh preserves the expected state. Any unsaved data prompts the user before being discarded.' },
-  { title: 'Verify {f} renders correctly in dark mode theme', category: 'Adhoc', priority: 'LOW',
-    pre: ['User is logged in', 'Dark mode is enabled in settings or system preference'],
-    steps: ['Enable dark mode', 'Navigate to {f}', 'Verify all text is readable against dark backgrounds', 'Verify no elements are invisible or poorly contrasted'],
-    expected: 'All {f} elements are properly themed in dark mode with adequate contrast and readability.' },
-  { title: 'Verify {f} sanitizes special characters in user input', category: 'Negative', priority: 'HIGH',
-    pre: ['User is logged in', '{f} accepts user input'],
-    steps: ['Enter special characters in input fields: <script>, SQL quotes, etc.', 'Submit the input', 'Verify no XSS is executed', 'Verify the system handles the input safely'],
-    expected: 'Special characters are escaped or rejected. No XSS or injection vulnerabilities are triggered.' },
-  { title: 'Verify {f} is fully operable using keyboard only', category: 'Adhoc', priority: 'MEDIUM',
-    pre: ['User is logged in', 'Mouse/trackpad is disabled or unused'],
-    steps: ['Tab through all interactive elements in {f}', 'Verify focus indicators are visible', 'Activate buttons/links with Enter/Space', 'Navigate through all key flows using keyboard only'],
-    expected: 'All interactive elements in {f} are keyboard-accessible with visible focus indicators.' },
-  { title: 'Verify {f} displays user-friendly error when API returns 500', category: 'Negative', priority: 'HIGH',
-    pre: ['User is logged in', 'Backend is configured to return 500 error for {f} API'],
-    steps: ['Navigate to {f}', 'Trigger the action that calls the failing API', 'Verify a user-friendly error message is displayed', 'Verify a retry option is available'],
-    expected: 'A clear error message is shown (no stack trace). A retry button allows the user to re-attempt.' },
-  { title: 'Verify {f} handles empty API response gracefully', category: 'Edge Case', priority: 'MEDIUM',
-    pre: ['User is logged in', 'Backend returns empty data for {f}'],
-    steps: ['Navigate to {f}', 'Verify empty state message is displayed', 'Verify no layout breakage', 'Verify no JavaScript errors in console'],
-    expected: '{f} shows an informative empty state message. Layout is intact and no errors occur.' },
-  { title: 'Verify {f} truncates or wraps extremely long text content', category: 'Edge Case', priority: 'LOW',
-    pre: ['User is logged in', 'Data contains very long text strings (1000+ chars)'],
-    steps: ['Load {f} with extremely long text data', 'Verify text is truncated with ellipsis or wraps correctly', 'Verify no horizontal overflow breaks the layout'],
-    expected: 'Long text is handled gracefully — truncated or wrapped without breaking the layout.' },
-  { title: 'Verify {f} print layout is clean and readable', category: 'Adhoc', priority: 'LOW',
-    pre: ['User is logged in', '{f} page is loaded'],
-    steps: ['Open the browser print dialog (Ctrl+P)', 'Preview the print layout', 'Verify navigation and non-essential UI elements are hidden', 'Verify content is formatted for print'],
-    expected: 'Print layout shows only relevant content in a clean, readable format.' },
+  { title: 'Verify {f} enforces business rule: minimum value validation for numeric fields', category: 'Negative', priority: 'HIGH',
+    pre: ['User is logged in', '{f} has numeric fields with defined minimum values'],
+    steps: ['Enter a value below the minimum threshold for a numeric field', 'Attempt to submit or save', 'Verify specific validation error appears', 'Verify submission is blocked'],
+    expected: 'Minimum value rule enforced. Values below threshold rejected with clear error message.' },
+  { title: 'Verify {f} state machine transitions follow defined workflow rules', category: 'Negative', priority: 'HIGH',
+    pre: ['User is logged in', '{f} has multi-state workflow (Draft→Pending→Approved)'],
+    steps: ['Attempt to transition from Draft directly to Approved (bypassing Pending)', 'Verify transition is blocked', 'Verify error indicates invalid state transition', 'Verify only valid transitions (Draft→Pending, Pending→Approved) are allowed'],
+    expected: 'State machine enforces valid transitions only. Invalid transitions blocked with specific error.' },
+  { title: 'Verify {f} audit trail logs all create/update/delete actions with user and timestamp', category: 'Happy Path', priority: 'HIGH',
+    pre: ['User is logged in', '{f} has audit trail enabled'],
+    steps: ['Create a new record in {f}', 'Update the record', 'Delete the record', 'Navigate to audit trail log', 'Verify all three actions logged with user ID, action type, and timestamp'],
+    expected: 'All CRUD operations captured in audit trail with complete metadata (user, timestamp, action).' },
+  { title: 'Verify {f} handles concurrent modifications with optimistic locking', category: 'Edge Case', priority: 'HIGH',
+    pre: ['User is logged in', '{f} supports concurrent access', 'Two users are accessing the same record'],
+    steps: ['User A opens record for editing', 'User B opens the same record', 'User B saves changes first', 'User A attempts to save their changes', 'Verify User A receives conflict error or prompt to resolve'],
+    expected: 'Concurrent modification detected. User A shown conflict error with option to refresh and retry.' },
+  { title: 'Verify {f} performance under load: response time < 2s with 1000 records', category: 'Edge Case', priority: 'HIGH',
+    pre: ['User is logged in', '{f} contains 1000+ records', 'Performance testing tools available'],
+    steps: ['Navigate to {f} with 1000 records loaded', 'Measure initial page load time', 'Perform filter/sort operations', 'Verify all operations complete within 2 seconds'],
+    expected: 'All operations complete within acceptable performance threshold (< 2s) with production-scale data.' },
+  { title: 'Verify {f} role-based access control restricts operations based on user permissions', category: 'Negative', priority: 'HIGH',
+    pre: ['User with limited permissions is logged in', '{f} has role-based restrictions'],
+    steps: ['Attempt to perform a restricted action (delete/admin function)', 'Verify action is blocked', 'Verify access denied error message shown', 'Verify no data modification occurs'],
+    expected: 'RBAC enforced. Restricted users blocked from unauthorized operations with clear access denied message.' },
+  { title: 'Verify {f} sanitizes input while preserving legitimate special characters', category: 'Negative', priority: 'HIGH',
+    pre: ['User is logged in', '{f} accepts text input with special characters'],
+    steps: ['Enter legitimate special characters: apostrophes, ampersands, angle brackets', 'Submit the form', 'Verify data is stored correctly without corruption', 'Verify XSS/SQL injection still blocked'],
+    expected: 'Legitimate special characters preserved. Malicious patterns sanitized without false positives.' },
+  { title: 'Verify {f} data integrity: foreign key constraints prevent orphaned records', category: 'Negative', priority: 'HIGH',
+    pre: ['User is logged in', '{f} has relational data with foreign key constraints'],
+    steps: ['Delete a parent record that has dependent child records', 'Verify delete is blocked', 'Verify error indicates dependent records exist', 'Verify cascading delete or block behavior matches specification'],
+    expected: 'Foreign key constraints enforced. Orphaned records prevented with clear error message.' },
+  { title: 'Verify {f} pagination remains consistent when data changes during navigation', category: 'Edge Case', priority: 'MEDIUM',
+    pre: ['User is logged in', '{f} has pagination with dynamic data'],
+    steps: ['Navigate to page 1', 'Note the records visible', 'Add a new record that would appear on page 1', 'Navigate to page 2 and back to page 1', 'Verify pagination recalculates correctly'],
+    expected: 'Pagination recalculates correctly when underlying data changes. No stale or duplicate records shown.' },
+  { title: 'Verify {f} error recovery: user input preserved after server error', category: 'Negative', priority: 'HIGH',
+    pre: ['User is logged in', '{f} has a form with multiple fields', 'Backend configured to return 500 on submission'],
+    steps: ['Fill all form fields with valid data', 'Submit the form', 'Observe server error message', 'Verify all user input remains in fields', 'Retry submission without re-entering data'],
+    expected: 'User input preserved after server error. User can retry without re-entering data.' },
+  { title: 'Verify {f} compliance: required regulatory fields are enforced and validated', category: 'Negative', priority: 'HIGH',
+    pre: ['User is logged in', '{f} has regulatory/compliance field requirements'],
+    steps: ['Attempt to submit without a mandatory compliance field', 'Verify submission blocked', 'Verify error identifies the missing compliance requirement', 'Fill the field and verify submission succeeds'],
+    expected: 'Regulatory fields enforced. Missing compliance data blocked with specific error message.' },
 ];
 
 function padTestCases(testCases, features) {

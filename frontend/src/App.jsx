@@ -28,7 +28,9 @@ The dashboard should:
 const JSON_API_URL = 'http://localhost:4000/generate-tests';
 const TEXT_API_URL = 'http://localhost:4000/generate-from-text';
 const FILE_API_URL = 'http://localhost:4000/generate-from-file';
+const SWAGGER_API_URL = 'http://localhost:4000/generate-from-swagger-url';
 const DOWNLOAD_URL = 'http://localhost:4000/download';
+const HEALTH_URL = 'http://localhost:4000/health';
 
 const ACCEPTED_FILE_TYPES = '.txt,.pdf,.docx';
 
@@ -93,6 +95,8 @@ export default function App() {
   const [aiWarning, setAiWarning] = useState('');
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [priorityFilter, setPriorityFilter] = useState('ALL');
+  const [inputType, setInputType] = useState('json');
+  const [swaggerUrl, setSwaggerUrl] = useState('');
 
   useEffect(() => {
     if (toast) { const t = setTimeout(() => setToast(null), 4000); return () => clearTimeout(t); }
@@ -116,7 +120,10 @@ export default function App() {
 
   async function handleGenerate() {
     resetResults();
-    if (inputMode === 'json') await generateFromJSON();
+    if (inputMode === 'json') {
+      if (inputType === 'swagger') await generateFromSwagger();
+      else await generateFromJSON();
+    }
     else if (inputMode === 'story') await generateFromStory();
     else if (inputMode === 'file') await generateFromFile();
   }
@@ -133,7 +140,24 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) { setError(data.error || 'Server error.'); return; }
       applyResults(data);
-    } catch { setError('Could not reach the server. Is the backend running on port 4000?'); }
+    } catch (err) { setError(`Could not reach the server: ${err.message}. Is the backend running on port 4000?`); }
+    finally { setLoading(false); }
+  }
+
+  async function generateFromSwagger() {
+    const trimmed = swaggerUrl.trim();
+    if (!trimmed) { setError('Please paste a Swagger / OpenAPI URL.'); return; }
+    try { new URL(trimmed); } catch { setError('Invalid URL format. Please enter a valid URL.'); return; }
+
+    setLoading(true);
+    try {
+      const res = await fetch(SWAGGER_API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: trimmed }) });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || 'Server error.'); return; }
+      applyResults(data);
+      if (data.detectedFeatures) setDetectedFeatures(data.detectedFeatures);
+      if (data.parsingSource) setParsingSource(data.parsingSource);
+    } catch (err) { setError(`Could not reach the server: ${err.message}. Is the backend running on port 4000?`); }
     finally { setLoading(false); }
   }
 
@@ -147,7 +171,7 @@ export default function App() {
       applyResults(data);
       if (data.detectedFeatures) setDetectedFeatures(data.detectedFeatures);
       if (data.parsingSource) setParsingSource(data.parsingSource);
-    } catch { setError('Could not reach the server. Is the backend running on port 4000?'); }
+    } catch (err) { setError(`Could not reach the server: ${err.message}. Is the backend running on port 4000?`); }
     finally { setLoading(false); }
   }
 
@@ -165,8 +189,24 @@ export default function App() {
       if (data.parsingSource) setParsingSource(data.parsingSource);
       if (data.extractedTextPreview) setExtractedPreview(data.extractedTextPreview);
       if (data.fileName) setFileName(data.fileName);
-    } catch { setError('Could not reach the server. Is the backend running on port 4000?'); }
+    } catch (err) { setError(`Could not reach the server: ${err.message}. Is the backend running on port 4000?`); }
     finally { setLoading(false); }
+  }
+
+  async function testConnection() {
+    try {
+      const res = await fetch(HEALTH_URL);
+      if (res.ok) {
+        setToast('Backend connection successful!');
+        return true;
+      } else {
+        setError('Backend returned error status');
+        return false;
+      }
+    } catch (err) {
+      setError(`Backend connection failed: ${err.message}. Ensure backend is running on port 4000.`);
+      return false;
+    }
   }
 
   function applyResults(data) {
@@ -262,19 +302,50 @@ export default function App() {
         <section className="card input-section">
           <div className="card-header">
             <h2>Input</h2>
-            {inputMode !== 'file' && (
-              <button className="btn btn-ghost" onClick={handleLoadSample}>Load Sample</button>
-            )}
+            <div className="card-header-actions">
+              <button className="btn btn-ghost" onClick={testConnection}>Test Connection</button>
+              {inputMode !== 'file' && inputType !== 'swagger' && (
+                <button className="btn btn-ghost" onClick={handleLoadSample}>Load Sample</button>
+              )}
+            </div>
           </div>
 
           <div className="input-mode-toggle">
-            <button className={`mode-btn ${inputMode === 'json' ? 'active' : ''}`} onClick={() => { setInputMode('json'); resetResults(); resetFileInput(); }}>JSON Input</button>
+            <button className={`mode-btn ${inputMode === 'json' ? 'active' : ''}`} onClick={() => { setInputMode('json'); resetResults(); resetFileInput(); }}>API Input</button>
             <button className={`mode-btn ${inputMode === 'story' ? 'active' : ''}`} onClick={() => { setInputMode('story'); resetResults(); resetFileInput(); }}>User Story</button>
             <button className={`mode-btn ${inputMode === 'file' ? 'active' : ''}`} onClick={() => { setInputMode('file'); resetResults(); }}>Upload File</button>
           </div>
 
           {inputMode === 'json' && (
-            <textarea className="json-input" placeholder={`{\n  "endpoint": "/users",\n  "method": "POST",\n  "fields": { "email": "string", "age": "number" }\n}`} value={jsonInput} onChange={(e) => setJsonInput(e.target.value)} spellCheck={false} />
+            <>
+              <div className="api-sub-toggle">
+                <label className={`sub-radio ${inputType === 'json' ? 'active' : ''}`}>
+                  <input type="radio" name="inputType" value="json" checked={inputType === 'json'} onChange={() => { setInputType('json'); setError(''); }} />
+                  JSON Input
+                </label>
+                <label className={`sub-radio ${inputType === 'swagger' ? 'active' : ''}`}>
+                  <input type="radio" name="inputType" value="swagger" checked={inputType === 'swagger'} onChange={() => { setInputType('swagger'); setError(''); }} />
+                  Swagger URL
+                </label>
+              </div>
+
+              {inputType === 'json' && (
+                <textarea className="json-input" placeholder={`{\n  "endpoint": "/users",\n  "method": "POST",\n  "fields": { "email": "string", "age": "number" }\n}`} value={jsonInput} onChange={(e) => setJsonInput(e.target.value)} spellCheck={false} />
+              )}
+
+              {inputType === 'swagger' && (
+                <div className="swagger-input-group">
+                  <input
+                    type="url"
+                    className="swagger-url-input"
+                    placeholder="https://petstore.swagger.io/v2/swagger.json"
+                    value={swaggerUrl}
+                    onChange={(e) => setSwaggerUrl(e.target.value)}
+                  />
+                  <p className="swagger-hint">Supports OpenAPI 2.0 (Swagger) and OpenAPI 3.x JSON specs</p>
+                </div>
+              )}
+            </>
           )}
 
           {inputMode === 'story' && (
@@ -304,7 +375,7 @@ export default function App() {
             </div>
           )}
 
-          {inputMode === 'json' && (
+          {inputMode === 'json' && inputType === 'json' && (
             <div className="ai-toggle-row">
               <label className="toggle-label">
                 <div className={`toggle-switch ${enhanceAI ? 'on' : ''}`} onClick={() => setEnhanceAI(!enhanceAI)}>
@@ -320,7 +391,7 @@ export default function App() {
           {aiWarning && <p className="warning-msg">AI Warning: {aiWarning}</p>}
 
           <button className="btn btn-primary generate-btn" onClick={handleGenerate} disabled={loading}>
-            {loading ? (<><span className="spinner" />Generating…</>) : 'Generate Test Cases'}
+            {loading ? (<><span className="spinner" />{inputType === 'swagger' ? 'Fetching Swagger & generating…' : 'Generating…'}</>) : 'Generate Test Cases'}
           </button>
         </section>
 

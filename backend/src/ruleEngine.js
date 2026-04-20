@@ -994,6 +994,222 @@ function generateSecurityTests(endpoint, method, fields) {
 }
 
 // ---------------------------------------------------------------------------
+// 6. Business Logic — field combinations, idempotency, concurrency, contracts
+// ---------------------------------------------------------------------------
+
+function generateBusinessLogicTests(endpoint, method, fields) {
+  const cases = [];
+  const validBody = buildValidBody(fields);
+  const fieldEntries = Object.entries(fields);
+  const fieldNames = Object.keys(fields);
+  const numericFields = fieldEntries.filter(([, t]) => t === 'number');
+  const stringFields = fieldEntries.filter(([, t]) => t === 'string');
+
+  // 6a. Field combinations — submit subsets of fields
+  if (fieldNames.length > 1) {
+    for (const [name, type] of fieldEntries) {
+      const singleBody = { [name]: validValueFor(name, type) };
+      cases.push(
+        makeCase(
+          `${method} ${endpoint} with only "${name}" provided (other required fields omitted)`,
+          { endpoint, method, body: singleBody },
+          { status: 400, error: `Missing required fields: ${fieldNames.filter(f => f !== name).join(', ')}` },
+          'high',
+          'negative'
+        )
+      );
+    }
+
+    // All fields except one
+    for (const [name] of fieldEntries) {
+      const partialBody = { ...validBody };
+      delete partialBody[name];
+      cases.push(
+        makeCase(
+          `${method} ${endpoint} with all fields except "${name}" — validates partial submission rejection`,
+          { endpoint, method, body: partialBody },
+          { status: 400, error: `"${name}" is required and cannot be omitted` },
+          'high',
+          'negative'
+        )
+      );
+    }
+  }
+
+  // 6b. Idempotency — verify consistent behavior on duplicate requests
+  if (['POST', 'PUT', 'PATCH'].includes(method)) {
+    cases.push(
+      makeCase(
+        `${method} ${endpoint} idempotency — identical request sent twice yields consistent result without duplicates`,
+        { endpoint, method, body: validBody, note: 'Send request twice within 1s' },
+        { status: 200, message: 'Second request does not create duplicates; returns same or updated resource' },
+        'high',
+        'happy'
+      )
+    );
+  }
+
+  // 6c. Response contract — verify response schema matches expected structure
+  cases.push(
+    makeCase(
+      `${method} ${endpoint} response contract — response body contains all expected resource fields`,
+      { endpoint, method, body: validBody },
+      { status: 200, bodyContains: fieldNames, message: 'Response schema includes all input fields in the returned resource object' },
+      'high',
+      'happy'
+    )
+  );
+
+  cases.push(
+    makeCase(
+      `${method} ${endpoint} response includes server-generated metadata (id, createdAt, updatedAt)`,
+      { endpoint, method, body: validBody },
+      { status: 200, message: 'Response includes auto-generated id, createdAt timestamp, and updatedAt timestamp' },
+      'medium',
+      'happy'
+    )
+  );
+
+  // 6d. Conditional field validation (cross-field dependencies)
+  if (numericFields.length > 0 && stringFields.length > 0) {
+    const numField = numericFields[0][0];
+    const strField = stringFields[0][0];
+    cases.push(
+      makeCase(
+        `${method} ${endpoint} cross-field validation — "${numField}" boundary with valid "${strField}"`,
+        { endpoint, method, body: { ...validBody, [numField]: 0, [strField]: validValueFor(strField, 'string') } },
+        { status: 200, message: `Cross-field combination accepted: "${strField}" valid + "${numField}" at zero boundary` },
+        'medium',
+        'boundary'
+      )
+    );
+  }
+
+  if (numericFields.length >= 2) {
+    const [f1, f2] = numericFields;
+    cases.push(
+      makeCase(
+        `${method} ${endpoint} cross-field validation — "${f1[0]}" must not exceed "${f2[0]}" (business rule)`,
+        { endpoint, method, body: { ...validBody, [f1[0]]: 100, [f2[0]]: 50 } },
+        { status: 400, error: `"${f1[0]}" cannot exceed "${f2[0]}" per business logic` },
+        'high',
+        'negative'
+      )
+    );
+  }
+
+  // 6e. Concurrency — parallel requests with same data
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    cases.push(
+      makeCase(
+        `${method} ${endpoint} concurrent requests — 5 parallel requests with identical payload produce no data corruption`,
+        { endpoint, method, body: validBody, note: 'Execute 5 parallel requests simultaneously' },
+        { status: 200, message: 'All responses consistent; no race conditions, duplicates, or data corruption' },
+        'high',
+        'edge'
+      )
+    );
+  }
+
+  // 6f. Rate limiting behavior
+  cases.push(
+    makeCase(
+      `${method} ${endpoint} rate limiting — exceeding request quota returns 429 with retry-after header`,
+      { endpoint, method, body: validBody, note: 'Send 200 requests within 60s to trigger rate limit' },
+      { status: 429, error: 'Rate limit exceeded. Retry-After header indicates wait time.' },
+      'medium',
+      'edge'
+    )
+  );
+
+  // 6g. CORS preflight
+  cases.push(
+    makeCase(
+      `OPTIONS ${endpoint} CORS preflight returns Access-Control-Allow-Origin and allowed methods`,
+      { endpoint, method: 'OPTIONS', headers: { Origin: 'https://app.example.com', 'Access-Control-Request-Method': method } },
+      { status: 200, message: 'Response includes Access-Control-Allow-Origin, Access-Control-Allow-Methods, and Access-Control-Allow-Headers' },
+      'medium',
+      'happy'
+    )
+  );
+
+  // 6h. Partial update semantics (PATCH or PUT)
+  if (['PATCH', 'PUT'].includes(method) && fieldNames.length > 1) {
+    const firstField = fieldEntries[0];
+    cases.push(
+      makeCase(
+        `PATCH ${endpoint} partial update — sending only "${firstField[0]}" updates it without resetting other fields`,
+        { endpoint, method: 'PATCH', body: { [firstField[0]]: validValueFor(firstField[0], firstField[1]) } },
+        { status: 200, message: `Only "${firstField[0]}" updated; all other fields retain previous values` },
+        'high',
+        'happy'
+      )
+    );
+  }
+
+  // 6i. GET-specific: pagination, filtering, sorting
+  if (method === 'GET') {
+    cases.push(
+      makeCase(
+        `${method} ${endpoint}?page=1&limit=10 returns correct page with pagination metadata`,
+        { endpoint, method, body: null, queryParams: { page: 1, limit: 10 } },
+        { status: 200, message: 'Response contains items array (max 10), total count, current page, and total pages' },
+        'high',
+        'happy'
+      )
+    );
+
+    cases.push(
+      makeCase(
+        `${method} ${endpoint}?page=99999 out-of-range page returns empty results with valid structure`,
+        { endpoint, method, body: null, queryParams: { page: 99999, limit: 10 } },
+        { status: 200, message: 'Response returns empty items array with pagination metadata indicating 0 results' },
+        'medium',
+        'edge'
+      )
+    );
+
+    if (fieldNames.length > 0) {
+      cases.push(
+        makeCase(
+          `${method} ${endpoint}?sort=${fieldNames[0]}&order=desc returns results in descending order`,
+          { endpoint, method, body: null, queryParams: { sort: fieldNames[0], order: 'desc' } },
+          { status: 200, message: `Results sorted by "${fieldNames[0]}" in descending order` },
+          'medium',
+          'happy'
+        )
+      );
+    }
+  }
+
+  // 6j. Content negotiation
+  cases.push(
+    makeCase(
+      `${method} ${endpoint} with Accept: application/xml returns 406 or graceful fallback`,
+      { endpoint, method, body: validBody, headers: { Accept: 'application/xml' } },
+      { status: 406, error: 'Server does not support requested content type; only application/json available' },
+      'low',
+      'edge'
+    )
+  );
+
+  // 6k. Conditional requests (ETag/If-None-Match)
+  if (method === 'GET') {
+    cases.push(
+      makeCase(
+        `${method} ${endpoint} with valid If-None-Match ETag returns 304 Not Modified`,
+        { endpoint, method, headers: { 'If-None-Match': '"cached-etag-value"' } },
+        { status: 304, message: 'Resource unchanged — server responds with 304 and empty body' },
+        'low',
+        'edge'
+      )
+    );
+  }
+
+  return cases;
+}
+
+// ---------------------------------------------------------------------------
 // QA-Engineer Format Transformer
 // ---------------------------------------------------------------------------
 
@@ -1132,6 +1348,7 @@ function runRuleEngine(input) {
     ...generateBoundaryTests(endpoint, upperMethod, fields),
     ...generateEdgeTests(endpoint, upperMethod, fields),
     ...generateSecurityTests(endpoint, upperMethod, fields),
+    ...generateBusinessLogicTests(endpoint, upperMethod, fields),
   ];
 
   return transformToQAFormat(rawCases, endpoint, upperMethod);

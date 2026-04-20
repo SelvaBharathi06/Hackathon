@@ -237,6 +237,86 @@ body {
   min-height: 180px;
 }
 
+/* ── API Sub-Toggle (JSON / Swagger) ──────────────────────────── */
+.api-sub-toggle {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.sub-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+  user-select: none;
+}
+
+.sub-radio input[type="radio"] {
+  accent-color: var(--accent);
+  margin: 0;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.sub-radio.active {
+  background: rgba(99,102,241,0.08);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sub-radio:hover:not(.active) {
+  border-color: var(--border-light);
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+}
+
+/* ── Swagger Input ────────────────────────────────────────────── */
+.swagger-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.swagger-url-input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 0.86rem;
+  background: var(--bg);
+  color: var(--text);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.swagger-url-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(99,102,241,0.15);
+}
+
+.swagger-url-input::placeholder {
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+.swagger-hint {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  margin: 0;
+  padding-left: 0.15rem;
+}
+
 /* ── Detected Features ────────────────────────────────────────── */
 .detected-features-card {
   border-left: 3px solid var(--accent);
@@ -611,6 +691,19 @@ body {
 .status-2xx { background: rgba(34,197,94,0.1); color: #16a34a; }
 .status-4xx { background: rgba(239,68,68,0.1); color: #dc2626; }
 .status-5xx { background: rgba(234,179,8,0.1); color: #a16207; }
+
+/* ── Card Header ───────────────────────────────────────────────────── */
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.2rem;
+}
+
+.card-header-actions {
+  display: flex;
+  gap: 0.5rem;
+}
 
 /* ── Category Filter Buttons ──────────────────────────────────── */
 .category-filters {
