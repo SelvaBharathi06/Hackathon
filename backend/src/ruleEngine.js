@@ -994,6 +994,125 @@ function generateSecurityTests(endpoint, method, fields) {
 }
 
 // ---------------------------------------------------------------------------
+// QA-Engineer Format Transformer
+// ---------------------------------------------------------------------------
+
+const QA_CATEGORY_MAP = {
+  happy: 'Happy Path',
+  negative: 'Negative',
+  boundary: 'Edge Case',
+  edge: 'Edge Case',
+  security: 'Negative',
+  'ai-generated': 'Edge Case',
+};
+
+const CATEGORY_SORT_ORDER = { 'Happy Path': 0, 'Negative': 1, 'Edge Case': 2, 'Adhoc': 3 };
+
+function qaPreconditions(tc, endpoint) {
+  const pre = [`API endpoint ${endpoint} is deployed and accessible`];
+  const c = tc.category;
+  if (c === 'happy') {
+    pre.push('User is authenticated with a valid session token');
+    pre.push('All dependent backend services and databases are operational');
+    pre.push('Required reference/seed data exists in the system');
+  } else if (c === 'negative') {
+    pre.push('User is authenticated with a valid session token');
+    pre.push('Server-side input validation is active and enforced');
+  } else if (c === 'security') {
+    pre.push('Security testing is authorized for this environment');
+    pre.push('WAF and input sanitization rules are active');
+    pre.push('Logging is enabled to capture suspicious requests');
+  } else if (c === 'boundary') {
+    pre.push('User is authenticated with a valid session token');
+    pre.push('Field-level constraints (min/max length, value range) are configured');
+  } else {
+    pre.push('User is authenticated with a valid session token');
+    pre.push('System is in a clean, known state');
+  }
+  return pre;
+}
+
+function qaSteps(tc, endpoint, method) {
+  const steps = [];
+  const body = tc.input?.body;
+  const headers = tc.input?.headers;
+  const rawBody = tc.input?.rawBody;
+
+  if (body !== null && body !== undefined && typeof body === 'object' && !Array.isArray(body)) {
+    const s = JSON.stringify(body);
+    steps.push(`Prepare request payload: ${s.length > 120 ? s.slice(0, 120) + '…' : s}`);
+  } else if (Array.isArray(body)) {
+    steps.push('Prepare request payload as a JSON array instead of an object');
+  } else if (rawBody) {
+    steps.push(`Prepare malformed request body: "${String(rawBody).slice(0, 80)}"`);
+  } else if (body === null) {
+    steps.push('Prepare request with null/empty body');
+  }
+
+  if (headers && Object.keys(headers).length > 0) {
+    const list = Object.entries(headers).map(([k, v]) => `${k}: ${String(v).slice(0, 50)}`).join(', ');
+    steps.push(`Set request headers — ${list}`);
+  } else {
+    steps.push('Set Content-Type header to application/json');
+  }
+
+  steps.push(`Send ${method} request to ${endpoint}`);
+  steps.push(`Verify HTTP response status code is ${tc.expected.status}`);
+
+  if (tc.expected.error) {
+    steps.push(`Verify response body contains error: "${tc.expected.error}"`);
+  } else if (tc.expected.message) {
+    steps.push(`Verify response confirms: "${tc.expected.message}"`);
+  }
+  if (tc.expected.bodyContains) {
+    steps.push(`Verify response includes fields: ${tc.expected.bodyContains.join(', ')}`);
+  }
+  if (tc.expected.contentType) {
+    steps.push(`Verify Content-Type is ${tc.expected.contentType}`);
+  }
+  if (tc.expected.maxResponseTimeMs) {
+    steps.push(`Verify response completes within ${tc.expected.maxResponseTimeMs}ms`);
+  }
+  return steps;
+}
+
+function qaExpected(tc) {
+  const s = tc.expected.status;
+  const p = [];
+  if (s >= 200 && s < 300) p.push(`Server responds with HTTP ${s} success`);
+  else if (s === 400) p.push('Server responds with 400 Bad Request');
+  else if (s === 401) p.push('Server responds with 401 Unauthorized');
+  else if (s === 403) p.push('Server responds with 403 Forbidden');
+  else if (s === 405) p.push('Server responds with 405 Method Not Allowed');
+  else if (s === 413) p.push('Server responds with 413 Payload Too Large');
+  else if (s === 415) p.push('Server responds with 415 Unsupported Media Type');
+  else p.push(`Server responds with HTTP ${s}`);
+
+  if (tc.expected.error) p.push(`Error indicates: "${tc.expected.error}"`);
+  else if (tc.expected.message) p.push(tc.expected.message);
+  if (tc.expected.bodyContains) p.push(`Response includes: ${tc.expected.bodyContains.join(', ')}`);
+  return p.join('. ') + '.';
+}
+
+function transformToQAFormat(testCases, endpoint, method) {
+  const out = testCases.map((tc) => ({
+    id: tc.id,
+    title: tc.scenario,
+    category: QA_CATEGORY_MAP[tc.category] || 'Edge Case',
+    priority: tc.priority.toUpperCase(),
+    preconditions: qaPreconditions(tc, endpoint),
+    steps: qaSteps(tc, endpoint, method),
+    expected: qaExpected(tc),
+    input: tc.input,
+    statusCode: tc.expected.status,
+  }));
+
+  out.sort((a, b) => (CATEGORY_SORT_ORDER[a.category] ?? 9) - (CATEGORY_SORT_ORDER[b.category] ?? 9));
+  out.forEach((tc, i) => { tc.id = i + 1; });
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point
 // ---------------------------------------------------------------------------
 
@@ -1007,7 +1126,7 @@ function runRuleEngine(input) {
   const upperMethod = method.toUpperCase();
   nextId = 1;
 
-  const testCases = [
+  const rawCases = [
     ...generateHappyTests(endpoint, upperMethod, fields),
     ...generateNegativeTests(endpoint, upperMethod, fields),
     ...generateBoundaryTests(endpoint, upperMethod, fields),
@@ -1015,14 +1134,7 @@ function runRuleEngine(input) {
     ...generateSecurityTests(endpoint, upperMethod, fields),
   ];
 
-  return testCases;
+  return transformToQAFormat(rawCases, endpoint, upperMethod);
 }
 
-module.exports = {
-  runRuleEngine,
-  generateHappyTests,
-  generateNegativeTests,
-  generateBoundaryTests,
-  generateEdgeTests,
-  generateSecurityTests,
-};
+module.exports = { runRuleEngine, transformToQAFormat, CATEGORY_SORT_ORDER };

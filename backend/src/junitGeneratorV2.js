@@ -101,18 +101,18 @@ function mockMvcMethod(method) {
 // ---------------------------------------------------------------------------
 
 function generateMethod(tc, inputSpec, uniqueNameFn) {
-  const methodName = uniqueNameFn(toMethodName(tc.scenario));
-  const httpMethod = mockMvcMethod(tc.input.method || inputSpec.method);
-  const url = tc.input.endpoint || inputSpec.endpoint;
+  const methodName = uniqueNameFn(toMethodName(tc.title || tc.scenario || 'untitled'));
+  const httpMethod = mockMvcMethod((tc.input && tc.input.method) || inputSpec.method);
+  const url = (tc.input && tc.input.endpoint) || inputSpec.endpoint;
   const hasBody = ['post', 'put', 'patch'].includes(httpMethod);
-  const status = statusMatcher(tc.expected.status);
+  const status = statusMatcher(tc.statusCode || 200);
 
   // Build the perform() chain
   let perform = `            ${httpMethod}("${escapeJava(url)}")`;
   perform += `\n                .contentType(MediaType.APPLICATION_JSON)`;
 
   // Headers
-  if (tc.input.headers) {
+  if (tc.input && tc.input.headers) {
     for (const [k, v] of Object.entries(tc.input.headers)) {
       if (v) {
         perform += `\n                .header("${escapeJava(k)}", "${escapeJava(v)}")`;
@@ -121,7 +121,7 @@ function generateMethod(tc, inputSpec, uniqueNameFn) {
   }
 
   // Body
-  if (hasBody) {
+  if (hasBody && tc.input) {
     if (tc.input.body !== undefined && tc.input.body !== null) {
       perform += `\n                .content(${bodyToJavaString(tc.input.body)})`;
     } else if (tc.input.rawBody) {
@@ -130,7 +130,7 @@ function generateMethod(tc, inputSpec, uniqueNameFn) {
   }
 
   return `    /**
-     * [${tc.category.toUpperCase()}] ${tc.scenario}
+     * [${tc.category}] ${tc.title || tc.scenario || 'Untitled'}
      * Priority: ${tc.priority}
      */
     @Test

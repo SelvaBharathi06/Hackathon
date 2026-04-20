@@ -15,29 +15,41 @@ function getApiKey() {
 }
 
 function buildPrompt(input, existingCount) {
-  return `You are a senior QA engineer. Given the following API specification, generate additional edge-case test scenarios that a rule-based engine might miss.
+  return `You are a senior QA engineer with 8+ years of experience in API testing.
+
+Given the following API specification, generate additional detailed test cases that a rule-based engine might miss.
 
 API Specification:
 - Endpoint: ${input.endpoint}
 - Method: ${input.method}
 - Fields: ${JSON.stringify(input.fields)}
 
-I already have ${existingCount} test cases covering: happy path, negative, boundary, edge, and security categories.
+I already have ${existingCount} test cases covering: Happy Path, Negative, and Edge Case categories.
 
-Generate 10-15 ADDITIONAL unique test cases I might have missed. Focus on:
+Generate 10-15 ADDITIONAL unique, high-quality test cases. Focus on:
 - Business logic edge cases
 - Race conditions or concurrency hints
-- Unusual but valid inputs
 - Complex field interaction tests
 - Real-world abuse scenarios
+- Data integrity validation
+
+STRICT RULES:
+- Each test case MUST include: title, preconditions, steps, expected
+- Avoid generic tests like "verify API works"
+- Preconditions must be specific and actionable
+- Steps must be step-by-step and executable
+- Expected must be precise and verifiable
 
 Return ONLY a JSON array (no markdown, no code fences) where each element has:
 {
-  "scenario": "description of the test",
-  "input": { "body": { ... } },
-  "expected": { "status": <http_code>, "error": "or message" },
-  "priority": "high" | "medium" | "low",
-  "category": "ai-generated"
+  "title": "specific test case title",
+  "category": "Happy Path" | "Negative" | "Edge Case" | "Adhoc",
+  "priority": "HIGH" | "MEDIUM" | "LOW",
+  "preconditions": ["precondition 1", "precondition 2"],
+  "steps": ["step 1", "step 2", "step 3"],
+  "expected": "precise expected result",
+  "statusCode": 200,
+  "input": { "body": { ... } }
 }`;
 }
 
@@ -93,14 +105,17 @@ async function enhanceWithAI(input, existingCount) {
     throw new Error('AI response is not an array.');
   }
 
-  // Normalize each case
+  // Normalize each case to QA format
   return parsed.map((tc, i) => ({
     id: 0, // will be renumbered by caller
-    scenario: tc.scenario || `AI-generated case ${i + 1}`,
+    title: tc.title || tc.scenario || `AI-generated case ${i + 1}`,
+    category: ['Happy Path', 'Negative', 'Edge Case', 'Adhoc'].includes(tc.category) ? tc.category : 'Edge Case',
+    priority: ['HIGH', 'MEDIUM', 'LOW'].includes(tc.priority) ? tc.priority : 'MEDIUM',
+    preconditions: Array.isArray(tc.preconditions) ? tc.preconditions : ['API endpoint is accessible', 'User is authenticated'],
+    steps: Array.isArray(tc.steps) ? tc.steps : [`Send request to ${input.endpoint}`, 'Verify response'],
+    expected: typeof tc.expected === 'string' ? tc.expected : (tc.expected?.error || tc.expected?.message || 'Test passes'),
     input: tc.input || { body: {} },
-    expected: tc.expected || { status: 200, message: 'AI-suggested' },
-    priority: ['high', 'medium', 'low'].includes(tc.priority) ? tc.priority : 'medium',
-    category: 'ai-generated',
+    statusCode: tc.statusCode || tc.expected?.status || 200,
   }));
 }
 
