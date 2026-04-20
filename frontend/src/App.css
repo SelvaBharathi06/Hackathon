@@ -558,13 +558,15 @@ body {
 
 .test-table {
   width: 100%;
+  min-width: 780px;
   border-collapse: collapse;
   font-size: 0.84rem;
+  table-layout: fixed;
 }
 
 .test-table th {
   text-align: left;
-  padding: 0.7rem 0.8rem;
+  padding: 0.65rem 0.75rem;
   background: var(--bg-elevated);
   color: var(--text-secondary);
   font-weight: 600;
@@ -575,22 +577,114 @@ body {
   position: sticky;
   top: 0;
   z-index: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+/* ── Column widths (fixed layout — order matches <th> in header-row-1) ── */
+
+/* TC ID */
+.test-table colgroup col:nth-child(1),
+.test-table th:nth-child(1),
+.test-table td:nth-child(1) {
+  width: 56px;
+  min-width: 56px;
+  max-width: 56px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* Title */
+.test-table th:nth-child(2),
+.test-table td:nth-child(2) {
+  width: 24%;
+  min-width: 180px;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+/* Priority */
+.test-table th:nth-child(3),
+.test-table td:nth-child(3) {
+  width: 140px;
+  min-width: 140px;
+  max-width: 140px;
+  overflow: hidden;
+  text-align: left;
+}
+
+/* Type */
+.test-table th:nth-child(4),
+.test-table td:nth-child(4) {
+  width: 130px;
+  min-width: 130px;
+  max-width: 130px;
+  overflow: hidden;
+  text-align: left;
+}
+
+/* Expected Result */
+.test-table th:nth-child(5),
+.test-table td:nth-child(5) {
+  width: auto;
+  min-width: 160px;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+/* Execution Status — merged colspan=2 header (col 6 in row 1) */
+.test-table thead .header-row-1 th:nth-child(6) {
+  width: 160px;
+  min-width: 160px;
+  max-width: 160px;
+  text-align: center;
+}
+
+/* DEV and QA sub-headers (row 2 — only 2 cells in this row) */
+.test-table thead .header-row-2 th:nth-child(1),
+.test-table thead .header-row-2 th:nth-child(2) {
+  width: 80px;
+  min-width: 80px;
+  max-width: 80px;
+  text-align: center !important;
+  vertical-align: middle;
+}
+
+/* DEV and QA data cells (cols 6 & 7) */
+.test-table td:nth-child(6),
+.test-table td:nth-child(7) {
+  width: 80px;
+  min-width: 80px;
+  max-width: 80px;
+  text-align: center;
+  vertical-align: middle;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* ── All thead th shared rules ───────────────────────────────── */
 .test-table thead th {
   vertical-align: middle;
-  text-align: center;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
 }
 
-.header-row-2 th {
+/* Center colspan "Execution Status" header */
+.test-table thead th[colspan] {
+  text-align: center;
+}
+
+/* DEV / QA sub-header row */
+.test-table .header-row-2 th {
   font-size: 0.7rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 0.35rem 0.5rem;
   top: 2.1rem;
+  text-align: center !important;
+  vertical-align: middle;
 }
 
 .exec-status-header {
@@ -598,13 +692,27 @@ body {
   color: var(--accent) !important;
   font-size: 0.76rem;
   letter-spacing: 0.03em;
+  text-align: center;
 }
 
+/* ── Body cells ───────────────────────────────────────────────── */
 .test-table td {
-  padding: 0.65rem 0.8rem;
+  padding: 0.65rem 0.75rem;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
   color: var(--text);
+  overflow: hidden;           /* strict containment — no bleed */
+  position: relative;
+  z-index: 1;
+}
+
+/* Text columns: allow soft wrap, no hard clip */
+.test-table td:nth-child(2),
+.test-table td:nth-child(5) {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .test-table tbody tr {
@@ -620,22 +728,34 @@ body {
   font-size: 0.8rem;
   font-weight: 600;
   font-family: var(--mono);
-  min-width: 40px;
+}
+
+.title-cell {
+  overflow-wrap: break-word;
+  line-height: 1.45;
+  font-weight: 500;
+  color: var(--text);
 }
 
 .expected-cell {
   font-size: 0.82rem;
   color: var(--text-secondary);
-  max-width: 250px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: break-word;
+  line-height: 1.4;
 }
 
 .exec-cell {
   text-align: center;
-  min-width: 60px;
+  vertical-align: middle;
   color: var(--text-muted);
+}
+
+/* Badge alignment - prevent layout break */
+.priority-badge,
+.cat-badge {
+  display: inline-block;
+  white-space: nowrap;
+  text-align: center;
 }
 
 .mono {
@@ -646,13 +766,62 @@ body {
 /* ── Priority Badges (pill, gradient) ─────────────────────────── */
 .priority-badge {
   display: inline-block;
-  padding: 0.2rem 0.65rem;
+  padding: 0.25rem 0.7rem;
   border-radius: var(--radius-pill);
   font-size: 0.7rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  position: relative;
+  cursor: default;
+}
+
+/* Tooltip bubble */
+.priority-badge::after {
+  content: attr(title);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  background: #111827;
+  color: #f9fafb;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 100;
+  letter-spacing: 0.03em;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+}
+
+/* Tooltip arrow */
+.priority-badge::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  border: 5px solid transparent;
+  border-top-color: #111827;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 100;
+}
+
+/* Show tooltip on hover */
+.priority-badge:hover::after,
+.priority-badge:hover::before {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
 .priority-show-stopper  { background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; box-shadow: 0 2px 6px rgba(239,68,68,0.2); }
@@ -909,17 +1078,18 @@ body {
 }
 
 .title-cell {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.4rem;
+  line-height: 1.45;
+  font-weight: 500;
 }
 
 .row-toggle {
+  display: inline-block;
   color: var(--text-muted);
   font-size: 0.75rem;
   flex-shrink: 0;
-  margin-top: 2px;
+  margin-right: 0.35rem;
   transition: color var(--transition);
+  user-select: none;
 }
 
 .expandable-row:hover .row-toggle {

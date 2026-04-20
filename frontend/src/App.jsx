@@ -25,12 +25,14 @@ The dashboard should:
 - Handle error states gracefully with a retry option
 - Be responsive on mobile and tablet devices`;
 
-const JSON_API_URL = 'http://localhost:4000/generate-tests';
-const TEXT_API_URL = 'http://localhost:4000/generate-from-text';
-const FILE_API_URL = 'http://localhost:4000/generate-from-file';
-const SWAGGER_API_URL = 'http://localhost:4000/generate-from-swagger-url';
-const DOWNLOAD_URL = 'http://localhost:4000/download';
-const HEALTH_URL = 'http://localhost:4000/health';
+const BASE_URL = 'http://localhost:4000';
+
+const JSON_API_URL = `${BASE_URL}/generate-tests`;
+const TEXT_API_URL = `${BASE_URL}/generate-from-text`;
+const FILE_API_URL = `${BASE_URL}/generate-from-file`;
+const SWAGGER_API_URL = `${BASE_URL}/generate-from-swagger-url`;
+const DOWNLOAD_URL = `${BASE_URL}/download`;
+const HEALTH_URL = `${BASE_URL}/health`;
 
 const ACCEPTED_FILE_TYPES = '.txt,.pdf,.docx';
 
@@ -513,7 +515,10 @@ export default function App() {
                             </td>
                             <td>
                               {(() => { const dp = getDisplayPriority(tc.priority, tc.category); return (
-                                <span className={`priority-badge priority-${PRIORITY_CSS_MAP[dp] || 'medium'}`}>
+                                <span
+                                  className={`priority-badge priority-${PRIORITY_CSS_MAP[dp] || 'medium'}`}
+                                  title={dp}
+                                >
                                   {dp}
                                 </span>
                               ); })()}
