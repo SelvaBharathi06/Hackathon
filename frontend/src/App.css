@@ -1100,17 +1100,26 @@ body {
   padding: 0;
   background: var(--bg);
   border-top: none;
+  overflow: visible;
 }
 
 .detail-grid {
   display: grid;
-  grid-template-columns: 1fr 1.5fr 1.5fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 1.2rem;
   padding: 1rem 1.2rem 1.2rem;
   border-left: 3px solid var(--accent);
   margin: 0 0.5rem 0.5rem;
   border-radius: 0 0 8px 8px;
   background: var(--bg-card);
+  max-width: 100%;
+  align-items: start;
+}
+
+.detail-section {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .detail-section h4 {
@@ -1129,10 +1138,18 @@ body {
   font-size: 0.82rem;
   color: var(--text-secondary);
   line-height: 1.65;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
 }
 
 .detail-section li {
   margin-bottom: 0.2rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
 }
 
 .detail-expected p {
@@ -1144,6 +1161,12 @@ body {
   padding: 0.5rem 0.75rem;
   border-radius: 6px;
   border-left: 3px solid #22c55e;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 /* ── Expand Controls ──────────────────────────────────────────── */

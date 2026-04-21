@@ -195,22 +195,6 @@ export default function App() {
     finally { setLoading(false); }
   }
 
-  async function testConnection() {
-    try {
-      const res = await fetch(HEALTH_URL);
-      if (res.ok) {
-        setToast('Backend connection successful!');
-        return true;
-      } else {
-        setError('Backend returned error status');
-        return false;
-      }
-    } catch (err) {
-      setError(`Backend connection failed: ${err.message}. Ensure backend is running on port 4000.`);
-      return false;
-    }
-  }
-
   function applyResults(data) {
     setTestCases(data.testCases); setJunitCode(data.junitCode); setSummary(data.summary);
     if (data.aiWarning) setAiWarning(data.aiWarning);
@@ -247,12 +231,6 @@ export default function App() {
   }
 
   function handleCopy() { navigator.clipboard.writeText(junitCode).then(() => setCopied(true)); }
-
-  function handleLoadSample() {
-    if (inputMode === 'json') setJsonInput(SAMPLE_JSON);
-    else if (inputMode === 'story') setStoryInput(SAMPLE_STORY);
-    setError('');
-  }
 
   function handleFileChange(e) {
     const file = e.target.files?.[0];
@@ -304,12 +282,6 @@ export default function App() {
         <section className="card input-section">
           <div className="card-header">
             <h2>Input</h2>
-            <div className="card-header-actions">
-              <button className="btn btn-ghost" onClick={testConnection}>Test Connection</button>
-              {inputMode !== 'file' && inputType !== 'swagger' && (
-                <button className="btn btn-ghost" onClick={handleLoadSample}>Load Sample</button>
-              )}
-            </div>
           </div>
 
           <div className="input-mode-toggle">
@@ -585,7 +557,7 @@ export default function App() {
                   </div>
                 )}
               </div>
-              <button className="btn btn-ghost" onClick={handleCopy}>{copied ? '✓ Copied!' : '📋 Copy Code'}</button>
+              <button className="btn btn-ghost" onClick={handleCopy}>{copied ? '✓ Copied!' : '📋 Copy Junit Code'}</button>
             </div>
           </section>
         )}
