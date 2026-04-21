@@ -31,8 +31,8 @@ async function extractTextFromFile(filePath, originalName) {
 
   if (ext === '.pdf') {
     const dataBuffer = fs.readFileSync(filePath);
-    const data = await pdfParse(dataBuffer);
-    const text = (data.text || '').trim();
+    const result = await pdfParse(dataBuffer);
+    const text = (result.text || '').trim();
     if (!text) throw new Error('Could not extract text from PDF (file may be image-based or empty).');
     return text;
   }

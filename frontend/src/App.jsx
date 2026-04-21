@@ -25,7 +25,8 @@ The dashboard should:
 - Handle error states gracefully with a retry option
 - Be responsive on mobile and tablet devices`;
 
-const BASE_URL = 'http://localhost:4000';
+
+const BASE_URL = 'https://hackathon-production-7405.up.railway.app';
 
 const JSON_API_URL = `${BASE_URL}/generate-tests`;
 const TEXT_API_URL = `${BASE_URL}/generate-from-text`;
@@ -486,14 +487,16 @@ export default function App() {
                               {tc.title}
                             </td>
                             <td>
-                              {(() => { const dp = getDisplayPriority(tc.priority, tc.category); return (
-                                <span
-                                  className={`priority-badge priority-${PRIORITY_CSS_MAP[dp] || 'medium'}`}
-                                  title={dp}
-                                >
-                                  {dp}
-                                </span>
-                              ); })()}
+                              {(() => {
+                                const dp = getDisplayPriority(tc.priority, tc.category); return (
+                                  <span
+                                    className={`priority-badge priority-${PRIORITY_CSS_MAP[dp] || 'medium'}`}
+                                    title={dp}
+                                  >
+                                    {dp}
+                                  </span>
+                                );
+                              })()}
                             </td>
                             <td>
                               <span className={`cat-badge cat-${catClass(tc.category)}`}>

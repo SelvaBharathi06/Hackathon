@@ -354,6 +354,23 @@ app.post('/generate-from-file', upload.single('file'), async (req, res) => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Helper: Generate fallback URLs for Swagger UI URLs
+// ---------------------------------------------------------------------------
+
+function generateFallbackUrls(baseUrl) {
+  const normalized = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+  return [
+    `${normalized}/v3/openapi.json`,
+    `${normalized}/v2/swagger.json`,
+    `${normalized}/swagger.json`,
+    `${normalized}/openapi.json`,
+    `${normalized}/api-docs`,
+    `${normalized}/api/swagger.json`,
+    `${normalized}/api/openapi.json`,
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Helper: Validate Swagger/OpenAPI structure
 // ---------------------------------------------------------------------------
 
