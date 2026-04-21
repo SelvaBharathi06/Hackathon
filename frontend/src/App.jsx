@@ -271,9 +271,9 @@ export default function App() {
         <div className="header-content">
           <div className="logo">
             <span className="logo-icon">⚡</span>
-            <h1>QA Test Generator</h1>
+            <h1>Spec2Test Generator</h1>
           </div>
-          <p className="subtitle">Generate QA-engineer-level test cases from API specs, user stories, or uploaded documents</p>
+          <p className="subtitle">Generate QA-level test cases from API specs, user stories, or source code.</p>
         </div>
       </header>
 
@@ -464,7 +464,7 @@ export default function App() {
                   <table className="test-table">
                     <thead>
                       <tr className="header-row-1">
-                        <th rowSpan={2} style={{ width: '3.5rem' }}>TC ID</th>
+                        <th rowSpan={2} style={{ width: '3.5rem' }} title="Test Case ID">TC ID</th>
                         <th rowSpan={2}>Title</th>
                         <th rowSpan={2} style={{ width: '6rem' }}>Priority</th>
                         <th rowSpan={2} style={{ width: '7rem' }}>Type</th>
